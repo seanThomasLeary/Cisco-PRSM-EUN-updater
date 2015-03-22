@@ -2,10 +2,15 @@ package eun.update;
 
 import java.io.*;
 import java.net.*;
+import java.nio.file.Files;
+import java.nio.file.Paths;
 import java.security.cert.*;
 import java.util.*;
 
 import javax.net.ssl.*;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
 
 
 /**
@@ -34,9 +39,12 @@ public class EunUpdate {
     // Using the -v  parameter sets verbose=true for debug-level output
     boolean verbose = false;
 
-    // sensor uri, the part which is common to all commands
-    StringBuilder uri;
-    
+    // sensor uri, the IP and protocol part
+    String uriIPSegment;
+
+    // sensor uri, the db retrieval part
+    String uriGetPageSegment;
+
     // POST request xml content data
     StringBuilder sensorXmlMsg;
 
@@ -52,8 +60,7 @@ public class EunUpdate {
     // detail text file
     String updateFile;
 
-    // EUN page type 
-    String eunType;
+    static HashMap<String, String> eunTypes = new HashMap<String, String>();
 
     // installs the certification and hostname verification objects
     static
@@ -71,28 +78,37 @@ public class EunUpdate {
         try {
             HttpsURLConnection.setDefaultHostnameVerifier( hv );
         }   catch ( Exception e ) { }
+
+        // init the euntypes
+        EunUpdate.eunTypes.put("WebReputation", "/api/configure/customeun/CustomEUN/geteunbytype/1/1.json/");
+        EunUpdate.eunTypes.put("FileType", "/api/configure/customeun/CustomEUN/geteunbytype/2/1.json/");
+        EunUpdate.eunTypes.put("UrlFiltering", "/api/configure/customeun/CustomEUN/geteunbytype/4/1.json/");
+        EunUpdate.eunTypes.put("Application", "/api/configure/customeun/CustomEUN/geteunbytype/8/1.json/");
+        EunUpdate.eunTypes.put("Destination", "/api/configure/customeun/CustomEUN/geteunbytype/16/1.json/");
+        EunUpdate.eunTypes.put("Warning", "/api/configure/customeun/CustomEUN/geteunbytype/64/2.json/");
+        EunUpdate.eunTypes.put("Authentication", "/api/configure/customeun/CustomEUN/geteunbytype/128/3.json/");
+
     }
 
     public static void usage () {
         System.out.println("EunUpdate 21 Mar, 2015");
         System.out.println("Usage:");
-        System.out.println("   EunUpdate sensorURL -u user/passwd [-d filename] [-t type] [-v] ");
+        System.out.println("   EunUpdate sensorURL eunType -u user/passwd [-d filename] [-v] ");
         System.out.println("    -u sensor username and password, separated by the / char");
         System.out.println("    -v Verbose for additional messages.");
-        System.out.println("    -d detailTextFilename the name of the file which contains the new detail text");
-        System.out.println("    -t type of EUN page to update");
-        System.out.println("       1=");
-        System.out.println("       2=");
-        System.out.println("       3=");
-        System.out.println("       4=");
-        System.out.println("       5=");
-        System.out.println("       6=");
-        System.out.println("       7=");
-        System.out.println("       8= [default]");
-        System.out.println("   EunUpdate retrieves a specified EUN record and optionally updates the detail text.");
+        System.out.println("    -m MessageFilename the name of the file which contains the new message");
+        System.out.println("   eunType must be one of");
+        System.out.println("       WebReputation");
+        System.out.println("       FileType");
+        System.out.println("       UrlFiltering");
+        System.out.println("       Application [default]");
+        System.out.println("       Destination");
+        System.out.println("       Warning");
+        System.out.println("       Authentication");
+        System.out.println("   EunUpdate retrieves a specified EUN record and optionally updates the message.");
         System.out.println("   If -d is not specified, the record is only retrieved.");
         System.out.println("Example: update the EUN detail text for URL-filtering");
-        System.out.println("   java EunUpdate https://192.168.1.1 -u cisco/password -t 8 -d myfile.txt");
+        System.out.println("   java EunUpdate https://192.168.1.1 Application -u cisco/password -m ./myfile.txt");
     }
 
      /**
@@ -101,8 +117,8 @@ public class EunUpdate {
      */
      public static void main (String[] args)
      {
-         // uri is required
-         if (args.length < 2) {
+         // protocol:ip and euntype is required
+         if (args.length < 3) {
              usage();
              return;
          }
@@ -111,10 +127,9 @@ public class EunUpdate {
          String user = new String();
          String password = new String();
          String updateFile = new String();
-         String eunType = "8";
 
          int acount = args.length - 1;
-         int i = 0;
+         int i = 1;
          while (i < acount) {
              if ("-u".equals(args[1+i+0].toLowerCase())) {
                  if ((i+1) < acount)  {
@@ -135,33 +150,12 @@ public class EunUpdate {
                      System.out.println(FOR_HELP_TYPE);
                      return;
                  }
-             } else if ("-d".equals(args[1+i+0].toLowerCase())) {
+             } else if ("-m".equals(args[1+i+0].toLowerCase())) {
                  if ((i+1) < acount)  {
                      updateFile = new String(args[1+i+1]).toLowerCase();
                      i += 2;
                  } else {
                      System.out.println("too few filename params");
-                     System.out.println(FOR_HELP_TYPE);
-                     return;
-                 }
-             } else if ("-t".equals(args[1+i+0].toLowerCase())) {
-                 if ((i+1) < acount)  {
-                     eunType = new String(args[1+i+1]).toLowerCase();
-                     i += 2;
-                     try {
-                         int t = Integer.valueOf(eunType);
-                         if (t < 1 || t > 9) {
-                             System.out.println("EUN type must be 1-8 inclusive");
-                             System.out.println(FOR_HELP_TYPE);
-                             return;
-                         } 
-                     } catch (Exception ignore) {
-                         System.out.println("EUN type must be 1-8 inclusive");
-                         System.out.println(FOR_HELP_TYPE);
-                         return;
-                     }
-                 } else {
-                     System.out.println("too few type params");
                      System.out.println(FOR_HELP_TYPE);
                      return;
                  }
@@ -205,10 +199,27 @@ public class EunUpdate {
          }
 
          // input params ok, start the EventCatcher
-         String uri = args[0];
-         EunUpdate eu = new EunUpdate(uri, user, password,
-                 updateFile, eunType, verbose);
-         eu.processUpdate();
+         String ipSegment = args[0];
+         String eunType = args[1];
+         String uriGetPageSegment = null;
+         // validate the eun type
+         for (String eun : eunTypes.keySet()) {
+             if (eun.toLowerCase().startsWith(eunType.toLowerCase())) {
+                 if (uriGetPageSegment == null) {
+                     uriGetPageSegment = eunTypes.get(eun);
+                 } else {
+                     System.out.println("Ambiguous eun type [" +eunType+ "]");
+                     System.out.println(FOR_HELP_TYPE);
+                     return;
+                 }
+             }
+         }
+         if (uriGetPageSegment == null) {
+             uriGetPageSegment = eunTypes.get("Application");
+         }
+         EunUpdate eunUpdate = new EunUpdate(ipSegment, uriGetPageSegment, 
+                 user, password, updateFile, verbose);
+         eunUpdate.processUpdate();
 
      }
 
@@ -221,15 +232,19 @@ public class EunUpdate {
       * @param eunType the EUN page type
       * @param verbose enable debug messages
       */
-     public EunUpdate (String uri, String sensorUsername, String sensorPassword, 
-             String updateFile, String eunType, boolean verbose) {
-         this.uri = new StringBuilder(uri);
+     public EunUpdate (String ipSegment, String getPageSegment, 
+             String sensorUsername, String sensorPassword, 
+             String updateFile, boolean verbose) {
+         this.uriIPSegment = ipSegment;
+         this.uriGetPageSegment = getPageSegment;
          this.sensorUsername = new StringBuilder(sensorUsername);
          this.sensorPassword = new StringBuilder(sensorPassword);
-         this.updateFile = updateFile;
-         this.eunType = eunType;
+         if (updateFile.length() > 0) {
+             this.updateFile = updateFile;
+         }
          this.verbose = verbose;
          sensorXmlMsg = new StringBuilder();
+
      }
 
 
@@ -237,14 +252,70 @@ public class EunUpdate {
         /**
          * Login to device
          */
-        StringBuilder authenticationUri= new StringBuilder(uri+"/authentication/login/");
-        sensorXmlMsg = new StringBuilder("username="+sensorUsername+"&password="+sensorPassword+"&next=\"\"");
-        StringBuilder str = new StringBuilder();
-        boolean ok = processSensorRequest(authenticationUri.toString(), str);
+        StringBuilder authenticationUri= 
+                new StringBuilder(uriIPSegment+"/authentication/login/");
+        sensorXmlMsg = new StringBuilder("username="+sensorUsername+
+                "&password="+sensorPassword+"&next=\"\"");
+        StringBuilder authStrBuilder = new StringBuilder();
+        boolean ok = processSensorRequest(
+                authenticationUri.toString(), authStrBuilder);
         if (!ok) {
             System.out.println("Failed to authenticate");
             return;
         }
+
+        /**
+         * Retrieve the page
+         */
+        StringBuilder getPageUri =
+                new StringBuilder(uriIPSegment+uriGetPageSegment);
+        sensorXmlMsg = new StringBuilder();
+        StringBuilder getPageStrBuilder = new StringBuilder();
+        ok = processSensorRequest(getPageUri.toString(), getPageStrBuilder);
+        if (!ok) {
+            System.out.println("Failed to authenticate");
+            return;
+        }
+
+        /**
+         * Parse the response
+         */
+        JSONObject jsonObject = new JSONObject(getPageStrBuilder.toString());
+        if (jsonObject.has("message")) {
+            System.out.println("Message found: ");
+            System.out.println(jsonObject.getString("message"));
+        } else {
+            System.out.println("Unable to find expected message");
+            return;
+        }
+
+        /**
+         * Check for the file update
+         */
+        if (updateFile == null) {
+            System.out.println("No message file specified");
+            return;
+        }
+        String newMessage = null;
+        try {
+            if (updateFile != null) {
+                byte[] encoded = Files.readAllBytes(Paths.get(updateFile));
+                newMessage = new String(encoded);
+            }
+        } catch (IOException e) {
+            System.out.println("Unable to read " + updateFile);
+            return;
+        }
+        if (newMessage == null || newMessage.length() == 0) {
+            System.out.println("Update file was empty");
+            return;
+        }
+        System.out.println("new message: "+newMessage);
+        jsonObject.put("message", newMessage);
+
+        /**
+         * Update sensor with new eun message
+         */
     }
 
     /**
@@ -257,7 +328,7 @@ public class EunUpdate {
      {
          try {
              if (verbose) {
-                 System.out.println("\nRequest URI [" +uri+ "]\n");
+                 System.out.println("\nRequest URI [" +uriIPSegment+ "]\n");
              }
              
              InputStream is = dispatchSensorMessage(requestUri, sensorXmlMsg.toString());
